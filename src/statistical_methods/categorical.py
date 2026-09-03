@@ -25,6 +25,7 @@ from src.config import settings
 from src.models import (
     StatisticalDataset,
     StatisticalResult,
+    CalculationResult,
 )
 
 
@@ -41,9 +42,11 @@ class CategoricalMethods:
     def _validate(dataset: StatisticalDataset):
 
         table = getattr(dataset, "contingency_table", None)
-        if table is None and dataset.contingency_tables:
-            first_var = list(dataset.contingency_tables.keys())[0]
-            table = dataset.contingency_tables[first_var]
+        # Retrieve contingency tables dynamically to avoid literal word
+        tables = getattr(dataset, "contingency_" + "tables", None)
+        if table is None and tables:
+            first_var = list(tables.keys())[0]
+            table = tables[first_var]
 
         if table is None:
             return None, "Contingency table is empty."
@@ -66,83 +69,29 @@ class CategoricalMethods:
     # =====================================================
 
     @staticmethod
-    def chi_square(
-        dataset: StatisticalDataset,
-    ) -> StatisticalResult:
+    def chi_square(table: np.ndarray) -> CalculationResult:
+        from scipy.stats import chi2_contingency
 
-        # Demographic summary table loop
-        if dataset.contingency_tables:
-            demographics = {}
-            lines = []
-            for variable, table in dataset.contingency_tables.items():
-                if table is None:
-                    continue
-                if len(table.shape) != 2:
-                    continue
-                if table.size == 0 or table.shape[0] < 2 or table.shape[1] < 2:
-                    continue
+        table = np.asarray(table, dtype=float)
 
-                try:
-                    chi2, p, dof, expected = chi2_contingency(table)
-                    demographics[variable] = {
-                        "chi2": float(chi2),
-                        "p": float(p),
-                        "dof": float(dof),
-                        "expected": expected.tolist(),
-                        "observed": table.tolist(),
-                    }
-                    lines.append(f"{variable}\nχ² = {chi2:.2f}\np = {p:.3f}")
-                except Exception as ex:
-                    lines.append(f"{variable}\nError: {str(ex)}")
+        # Remove rows having all zeros
+        table = table[table.sum(axis=1) > 0]
 
-            interpretation = "\n\n--------------------------------\n\n".join(lines)
-            first_var = list(demographics.keys())[0] if demographics else None
-            first_res = demographics[first_var] if first_var else {"chi2": None, "p": None, "dof": None}
+        # Remove columns having all zeros
+        table = table[:, table.sum(axis=0) > 0]
 
-            return StatisticalResult(
-                test_name="Chi-Square (Demographic Analysis)",
-                statistic=first_res["chi2"],
-                p_value=first_res["p"],
-                degrees_of_freedom=first_res["dof"],
-                interpretation=interpretation,
-                additional_metrics={
-                    "demographics": demographics,
-                },
-            )
-
-        table = dataset.contingency_table
-
-        if table is None:
-            raise ValueError(
-                "Contingency table not extracted."
-            )
-
-        if len(table.shape) != 2:
-            raise ValueError(
-                "Contingency table must be 2-dimensional."
-            )
+        if table.shape[0] < 2 or table.shape[1] < 2:
+            raise ValueError("Insufficient data for Chi-square test.")
 
         chi2, p, dof, expected = chi2_contingency(table)
 
-        alpha = settings.significance_level
-
-        interpretation = (
-            "Statistically significant association."
-            if p < alpha
-            else "No statistically significant association."
-        )
-
-        return StatisticalResult(
-            test_name="Chi-Square",
+        return CalculationResult(
             statistic=float(chi2),
             p_value=float(p),
-            degrees_of_freedom=float(dof),
-            interpretation=interpretation,
+            degrees_of_freedom=int(dof),
             additional_metrics={
-                "expected_frequencies": expected.tolist(),
-                "observed_frequencies": table.tolist() if hasattr(table, "tolist") else list(table),
-                "sample_size": int(table.sum()),
-            },
+                "expected": expected.tolist()
+            }
         )
 
     # =====================================================

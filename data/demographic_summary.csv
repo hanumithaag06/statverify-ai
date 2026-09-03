@@ -1,0 +1,41 @@
+Demographic Variables,Sub variables,Experimental (N=30),Control (N=30)
+Age of Child,1-2 years,80,73
+,2-3 years,20,27
+Gender,Male,57,40
+,Female,43,60
+Birth Order,First,67,33
+,Second,27,57
+,Third and above,7,10
+Age at Birth of Child,Full term,80,73
+,Preterm,20,27
+Religion,Hindu,50,63
+,Christian,27,23
+,Muslim,20,13
+,Others,3,0
+Place of Residence,Rural,50,50
+,Urban,37,37
+,Semi-Urban,13,13
+Mother's Educational Status,No formal education,13,20
+,Primary education,17,33
+,Secondary education,20,17
+,Higher secondary,30,20
+,Graduate,20,10
+Father's Educational Status,No formal education,17,27
+,Primary education,17,27
+,Secondary education,20,20
+,Higher secondary,23,13
+,Graduate,23,13
+Occupation of Mother,Housewife,37,63
+,Self-employee,20,27
+,Private employee,43,10
+,Government employee,0,0
+Occupation of Father,Self-employee,37,47
+,Private employee,60,43
+,Government employee,3,10
+Type of Family,Nuclear family,43,60
+,Joint family,50,40
+,Extended family,7,0
+Family Income per Month,< 5000,47,70
+,5001 - 10000,47,30
+,10001 - 15000,7,0
+,>15000,0,0

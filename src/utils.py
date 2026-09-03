@@ -21,6 +21,7 @@ Examples of what DOES NOT belong here:
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -47,7 +48,7 @@ logger.add(
 )
 
 logger.add(
-    sink=lambda msg: print(msg, end=""),
+    sink=lambda msg: sys.stdout.buffer.write(msg.encode(sys.stdout.encoding or 'utf-8', errors='replace')),
     level=settings.log_level,
 )
 

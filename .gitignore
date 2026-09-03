@@ -1,44 +1,47 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
+# ==========================================================
+# StatVerify AI — .gitignore Configuration
+# ==========================================================
 
-# Virtual Environment
+# 1. Environment Variables & Secrets (CRITICAL: Do NOT commit secrets)
+.env
+.env.local
+.env.*.local
+.streamlit/secrets.toml
+
+# 2. Python Virtual Environments
 .venv/
 venv/
 env/
+ENV/
 
-# Environment Variables
-.env.example
+# 3. Python Bytecode & Cache Files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
-# IDE
-.vscode/
-.idea/
-
-# Logs
-logs/
+# 4. Logs & Diagnostic Artifacts
+logs/*.log
 *.log
 
-# Reports
-exports/
+# 5. Generated Runtime Exports & Scratch Files
+exports/*.pdf
+scratch/
 
-# Python Cache
-.pytest_cache/
-.mypy_cache/
-
-# OS
-Thumbs.db
+# 6. IDE & OS Metadata Files
+.vscode/
+.idea/
+*.swp
+*.swo
 .DS_Store
+Thumbs.db
 
-# Streamlit
-.streamlit/secrets.toml
-
-# Build
-dist/
+# 7. Distribution / Build Artifacts
 build/
-
-
-# Test
-tests/
-*.tests
+dist/
+*.egg-info/

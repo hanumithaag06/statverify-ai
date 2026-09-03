@@ -76,6 +76,7 @@ class Settings(BaseSettings):
 
     openai_api_key: str = Field(default="")
     openai_base_url: str = Field(default="https://openrouter.ai/api/v1")
+    gemini_api_key: str = Field(default="")
     model_name: str = Field(default="qwen/qwen3-8b")
 
     # ===============================================================

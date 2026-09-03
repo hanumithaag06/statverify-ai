@@ -4,18 +4,14 @@ Universal Research Table Parser.
 The parser converts multiple research table formats into a
 normalized pandas DataFrame.
 
-Current Supported Inputs
-------------------------
-✔ Clipboard Text
-✔ CSV
-✔ Excel (.xlsx, .xls)
-
-Future Support
---------------
-□ PDF
-□ Images
-□ OCR
-□ HTML Tables
+Supported Inputs
+----------------
+✔ CSV          (.csv)
+✔ Excel        (.xlsx, .xls)
+✔ PDF Tables   (.pdf via pdfplumber / pypdf)
+✔ Image Tables (.png, .jpg, .jpeg, .tiff via PIL / pytesseract / Gemini Vision)
+✔ Clipboard    (Tab-separated or comma-separated raw text)
+✔ Multi-File   (Batch processing of multiple heterogeneous files)
 
 Workflow
 --------
@@ -33,6 +29,7 @@ in later phases.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import BinaryIO
 
@@ -45,6 +42,7 @@ from src.models import (
     ParsedTable,
     VariableType,
 )
+from src.config import settings
 from src.utils import logger, log_end, log_error, log_start
 
 
@@ -78,6 +76,13 @@ class UniversalParser:
         ".csv": InputType.CSV,
         ".xlsx": InputType.EXCEL,
         ".xls": InputType.EXCEL,
+        # Stubs — recognized but not yet parseable
+        ".pdf": InputType.PDF,
+        ".png": InputType.IMAGE,
+        ".jpg": InputType.IMAGE,
+        ".jpeg": InputType.IMAGE,
+        ".tiff": InputType.IMAGE,
+        ".tif": InputType.IMAGE,
     }
 
     # ---------------------------------------------------------
@@ -122,6 +127,12 @@ class UniversalParser:
             elif detected == InputType.CLIPBOARD:
                 dataframe = self._load_clipboard(source)
 
+            elif detected == InputType.PDF:
+                dataframe = self._load_pdf(source)
+
+            elif detected == InputType.IMAGE:
+                dataframe = self._load_image(source)
+
             else:
                 raise UnsupportedInputError(
                     f"{detected} is currently unsupported."
@@ -131,17 +142,77 @@ class UniversalParser:
 
             table_type = self._detect_table_type(dataframe)
 
+            is_summary_shaped = False
+            requires_role_confirmation = False
+            candidate_grouping = None
+            candidate_subcategory = None
+            candidate_values: list[str] = []
+
             if table_type == "SUMMARY":
 
-                logger.info("Summary table detected.")
+                logger.info("Summary table detected via header keywords.")
 
-                dataframe = self._normalize_summary_table(dataframe)
+                dataframe, group_sample_sizes = self._normalize_summary_table(dataframe)
 
                 summary_metadata = self._infer_summary_metadata(dataframe)
+
+                is_summary_shaped = True
+
+                looks_like_percentages = self._values_look_like_percentages(dataframe)
+
+                if group_sample_sizes:
+                    # N was found in the headers — fully deterministic,
+                    # no confirmation needed regardless of count/percentage.
+                    summary_metadata["_sample_sizes"] = group_sample_sizes
+
+                elif looks_like_percentages:
+                    # Values look like percentages but no N was found in
+                    # headers — group sizes cannot be assumed, so ask
+                    # the user instead of guessing.
+                    logger.info(
+                        "Percentage-shaped summary table with no N in "
+                        "headers; role confirmation required."
+                    )
+                    requires_role_confirmation = True
+
+                    value_cols = [
+                        c for c in ("Experimental", "Control")
+                        if c in dataframe.columns
+                    ]
+
+                    candidate_grouping = (
+                        "Variable" if "Variable" in dataframe.columns else None
+                    )
+                    candidate_subcategory = (
+                        "Sub Variable"
+                        if "Sub Variable" in dataframe.columns
+                        else None
+                    )
+                    candidate_values = value_cols
+
+                # else: raw counts with no N — nothing to convert,
+                # existing deterministic path handles it as-is.
 
             else:
 
                 summary_metadata = {}
+
+                # Header keywords didn't match at all — fall back to
+                # structural detection so arbitrarily-named
+                # group-comparison tables are still recognized.
+                (
+                    is_summary_shaped,
+                    candidate_grouping,
+                    candidate_subcategory,
+                    candidate_values,
+                ) = self._detect_summary_shape(dataframe)
+
+                if is_summary_shaped:
+                    logger.info(
+                        "Summary-shaped table detected structurally; "
+                        "role confirmation required."
+                    )
+                    requires_role_confirmation = True
 
             log_end("Universal Parser")
 
@@ -162,6 +233,11 @@ class UniversalParser:
                 dataframe=dataframe,
                 metadata=metadata,
                 summary_metadata=summary_metadata,
+                is_summary_shaped=is_summary_shaped,
+                requires_role_confirmation=requires_role_confirmation,
+                candidate_grouping_column=candidate_grouping,
+                candidate_subcategory_column=candidate_subcategory,
+                candidate_value_columns=candidate_values,
             )
 
         except Exception as error:
@@ -250,28 +326,130 @@ class UniversalParser:
         return pd.read_excel(source)
 
     # ---------------------------------------------------------
-    # Clipboard
+    # PDF Loader
     # ---------------------------------------------------------
 
-    def _load_clipboard(
+    def _load_pdf(
         self,
-        source: str,
+        source: str | Path | BinaryIO,
     ) -> pd.DataFrame:
         """
-        Parse clipboard text.
-
-        Supports tab-separated values copied directly
-        from Excel.
+        Extract tabular data from PDF documents using pdfplumber or pypdf.
         """
 
-        logger.info("Parsing clipboard text...")
+        logger.info("Extracting tables from PDF...")
 
-        from io import StringIO
+        # 1. Try pdfplumber for structured PDF tables
+        try:
+            import pdfplumber
 
-        return pd.read_csv(
-            StringIO(source),
-            sep=r"\t|,",
-            engine="python",
+            tables = []
+            with pdfplumber.open(source) as pdf:
+                for page in pdf.pages:
+                    extracted = page.extract_tables()
+                    for table in extracted:
+                        if table and len(table) > 1:
+                            # Use first row as header if valid
+                            df_table = pd.DataFrame(table[1:], columns=table[0])
+                            tables.append(df_table)
+
+            if tables:
+                logger.info(f"pdfplumber extracted {len(tables)} table(s) from PDF.")
+                return pd.concat(tables, ignore_index=True)
+
+        except Exception as e:
+            logger.warning(f"pdfplumber extraction failed: {e}. Trying pypdf...")
+
+        # 2. Try pypdf text extraction fallback
+        try:
+            from pypdf import PdfReader
+            from io import StringIO
+
+            reader = PdfReader(source)
+            text_lines = []
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    text_lines.extend(text.splitlines())
+
+            if text_lines:
+                raw_text = "\n".join(text_lines)
+                logger.info("pypdf extracted text lines from PDF.")
+                return pd.read_csv(
+                    StringIO(raw_text),
+                    sep=r"\t|,|\s{2,}",
+                    engine="python",
+                )
+
+        except Exception as e2:
+            logger.error(f"pypdf extraction failed: {e2}")
+
+        raise ParserError(
+            "Could not extract tabular data from the PDF file. "
+            "Ensure the PDF contains selectable text or table elements."
+        )
+
+    # ---------------------------------------------------------
+    # Image Loader
+    # ---------------------------------------------------------
+
+    def _load_image(
+        self,
+        source: str | Path | BinaryIO,
+    ) -> pd.DataFrame:
+        """
+        Extract tabular data from images using PIL, pytesseract, or Gemini Vision.
+        """
+
+        logger.info("Extracting tables from Image...")
+
+        # 1. Try pytesseract if installed
+        try:
+            import pytesseract
+            from PIL import Image
+            from io import StringIO
+
+            img = Image.open(source)
+            text = pytesseract.image_to_string(img)
+            if text and text.strip():
+                logger.info("pytesseract OCR extracted text from image.")
+                return pd.read_csv(
+                    StringIO(text.strip()),
+                    sep=r"\t|,|\s{2,}",
+                    engine="python",
+                )
+
+        except Exception as e:
+            logger.warning(f"pytesseract OCR not available or failed: {e}")
+
+        # 2. Try Gemini Vision fallback if GEMINI_API_KEY is available
+        import os
+        api_key = getattr(settings, "gemini_api_key", "") or os.getenv("GEMINI_API_KEY")
+        if api_key:
+            import google.generativeai as genai
+            from PIL import Image
+            from io import StringIO
+
+            genai.configure(api_key=api_key)
+            img = Image.open(source)
+            prompt = (
+                "Extract the table from this image into clean CSV format. "
+                "Return ONLY valid raw CSV text with headers. Do not wrap in markdown or add commentary."
+            )
+
+            for model_name in ["gemini-2.5-flash", "gemini-3.6-flash", "gemini-1.5-flash", "gemini-flash-latest"]:
+                try:
+                    model = genai.GenerativeModel(model_name)
+                    response = model.generate_content([prompt, img])
+                    csv_text = response.text.strip().replace("```csv", "").replace("```", "").strip()
+                    if csv_text:
+                        logger.info(f"Gemini Vision ({model_name}) extracted CSV table from image.")
+                        return pd.read_csv(StringIO(csv_text))
+                except Exception as e_m:
+                    logger.warning(f"Model {model_name} extraction failed: {e_m}")
+
+        raise ParserError(
+            "Image table OCR requires pytesseract or a valid GEMINI_API_KEY for vision model extraction."
         )
 
     # ---------------------------------------------------------
@@ -505,57 +683,115 @@ class UniversalParser:
         return "RAW"
 
     # ==========================================================
+    # Structural Summary Shape Detection
+    # ==========================================================
+
+    def _detect_summary_shape(
+        self,
+        dataframe: pd.DataFrame,
+    ) -> tuple[bool, str | None, str | None, list[str]]:
+        """
+        Structurally detect a group-comparison summary table without
+        relying on header keywords.
+
+        A table qualifies if it has:
+          - at least 2 columns that are ≥90% numeric (candidate group
+            value columns), and
+          - at least 1 remaining non-numeric column (candidate
+            sub-category / grouping column).
+
+        Returns
+        -------
+        (is_summary_shaped, candidate_grouping_col, candidate_subcategory_col, candidate_value_cols)
+        """
+
+        numeric_cols = []
+        text_cols = []
+
+        for column in dataframe.columns:
+
+            series = dataframe[column]
+            non_missing = series.notna().sum()
+
+            if non_missing == 0:
+                continue
+
+            numeric_ratio = (
+                pd.to_numeric(series, errors="coerce").notna().sum()
+                / non_missing
+            )
+
+            if numeric_ratio >= 0.9:
+                numeric_cols.append(column)
+            else:
+                text_cols.append(column)
+
+        if len(numeric_cols) < 2 or len(text_cols) < 1:
+            return False, None, None, []
+
+        if len(text_cols) == 1:
+            # Single categorical axis — e.g. just "Sub Variable"
+            return True, None, text_cols[0], numeric_cols
+
+        # Two or more text columns: the one with fewer unique
+        # non-null values relative to row count is more likely the
+        # grouping column (merged/repeated cells in the source table);
+        # the other is the sub-category column.
+        text_cols_sorted = sorted(
+            text_cols,
+            key=lambda c: dataframe[c].nunique(dropna=True),
+        )
+
+        grouping_col = text_cols_sorted[0]
+        subcategory_col = text_cols_sorted[1]
+
+        return True, grouping_col, subcategory_col, numeric_cols
+
+    # ==========================================================
     # Summary Table Normalization
     # ==========================================================
 
     def _normalize_summary_table(
         self,
         dataframe: pd.DataFrame,
-    ) -> pd.DataFrame:
+    ) -> tuple[pd.DataFrame, dict[str, int]]:
         """
         Normalize summary tables copied from research papers.
 
-        - Strips whitespace from column names.
-        - Renames common columns to canonical names
-          (``Variable``, ``Sub Variable``, ``Experimental``, ``Control``).
-        - Forward-fills the ``Variable`` column to fill merged cells.
-        - Drops fully-empty rows.
-
-        Example
-        -------
-        Before::
-
-            Age   | 1–2 Years
-            (blank)| 2–3 Years
-
-        After::
-
-            Age   | 1–2 Years
-            Age   | 2–3 Years
+        Returns the normalized dataframe alongside any group sample
+        sizes detected from the original headers (e.g. "N=30"), so
+        percentages can later be converted to counts without any
+        hardcoded assumption about group size.
         """
 
         df = dataframe.copy()
 
-        # Remove whitespace from column names
         df.columns = [
             str(c).strip()
             for c in df.columns
         ]
 
-        # Rename common columns to canonical names
         renamed = {}
+        sample_sizes: dict[str, int] = {}
 
         for column in df.columns:
 
             lower = column.lower()
 
+            n_match = re.search(r"n\s*=\s*(\d+)", lower)
+            n_value = int(n_match.group(1)) if n_match else None
+
             if "experimental" in lower:
                 renamed[column] = "Experimental"
+                if n_value is not None:
+                    sample_sizes["Experimental"] = n_value
 
             elif "control" in lower:
                 renamed[column] = "Control"
+                if n_value is not None:
+                    sample_sizes["Control"] = n_value
 
-            elif "sub" in lower:
+            elif "sub" in lower or "category" in lower:
                 renamed[column] = "Sub Variable"
 
             elif "variable" in lower:
@@ -563,7 +799,6 @@ class UniversalParser:
 
         df.rename(columns=renamed, inplace=True)
 
-        # Forward-fill merged Variable cells
         if "Variable" in df.columns:
             df["Variable"] = (
                 df["Variable"]
@@ -571,14 +806,81 @@ class UniversalParser:
                 .ffill()
             )
 
-        # Remove fully-empty rows
         df = df.dropna(how="all")
 
-        return df.reset_index(drop=True)
+        return df.reset_index(drop=True), sample_sizes
+
+    def parse_multiple(
+        self,
+        sources: list[str | Path | BinaryIO],
+    ) -> list[ParsedTable]:
+        """
+        Parse a list of uploaded files (batch multi-input).
+
+        Parameters
+        ----------
+        sources
+            List of file paths or uploaded file objects.
+
+        Returns
+        -------
+        list[ParsedTable]
+        """
+
+        logger.info(f"Parsing batch of {len(sources)} input sources...")
+        tables = []
+        for src in sources:
+            try:
+                table = self.parse(src)
+                tables.append(table)
+            except Exception as ex:
+                logger.error(f"Failed to parse source '{src}': {ex}")
+
+        return tables
 
     # ==========================================================
     # Summary Metadata
     # ==========================================================
+
+    def _values_look_like_percentages(
+        self,
+        dataframe: pd.DataFrame,
+    ) -> bool:
+        """
+        Heuristically detect whether Experimental/Control values are
+        percentages rather than raw counts, by checking whether values
+        sum to ~100 per variable group. This is a generic signal that
+        works for any dataset — it never assumes a specific N.
+        """
+
+        if "Variable" not in dataframe.columns:
+            return False
+
+        group_cols = [
+            c for c in ("Experimental", "Control")
+            if c in dataframe.columns
+        ]
+
+        if not group_cols:
+            return False
+
+        near_100_count = 0
+        total_checked = 0
+
+        for _, group_df in dataframe.groupby("Variable"):
+            for col in group_cols:
+                total = pd.to_numeric(
+                    group_df[col], errors="coerce"
+                ).fillna(0).sum()
+
+                total_checked += 1
+                if 98 <= total <= 102:
+                    near_100_count += 1
+
+        if total_checked == 0:
+            return False
+
+        return (near_100_count / total_checked) > 0.7
 
     def _infer_summary_metadata(
         self,
