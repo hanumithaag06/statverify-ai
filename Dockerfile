@@ -17,7 +17,7 @@ COPY requirements.txt .
 
 # Install Python packages
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir streamlit pandas numpy scipy statsmodels reportlab pypdf pdfplumber Pillow google-generativeai pydantic pydantic-settings python-dotenv loguru ruff pytest
+    pip install --no-cache-dir streamlit pandas numpy scipy statsmodels reportlab pypdf pdfplumber Pillow google-generativeai pydantic pydantic-settings python-dotenv loguru langgraph ruff pytest
 
 # Copy application source code
 COPY src/ ./src/
