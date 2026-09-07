@@ -1,0 +1,39 @@
+services:
+  # ===============================================================
+  # 1. StatVerify AI — Interactive Streamlit Web Service
+  # ===============================================================
+  - type: web
+    name: statverify-ai-web
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: MODEL_NAME
+        value: gemini-3.6-flash
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+
+  # ===============================================================
+  # 2. StatVerify AI — Scheduled Daily Cron Job Service
+  # ===============================================================
+  - type: cron
+    name: statverify-ai-daily-cron
+    env: docker
+    dockerfilePath: ./Dockerfile
+    schedule: "0 0 * * *"
+    command: "python -m src.cron"
+    plan: free
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: MODEL_NAME
+        value: gemini-3.6-flash
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
