@@ -1,39 +1,40 @@
+# StatVerify AI — Render Blueprint Deployment Specification
+# Automatically provisions both the Streamlit Web Application and the Daily Cron Job Service
+
 services:
-  # ===============================================================
-  # 1. StatVerify AI — Interactive Streamlit Web Service
-  # ===============================================================
+  # 1. Main Interactive Streamlit Application
   - type: web
     name: statverify-ai-web
     env: docker
     dockerfilePath: ./Dockerfile
     plan: free
+    region: oregon
     healthCheckPath: /_stcore/health
     envVars:
-      - key: GEMINI_API_KEY
-        sync: false
-      - key: MODEL_NAME
-        value: gemini-3.6-flash
       - key: APP_ENV
         value: production
       - key: LOG_LEVEL
         value: INFO
+      - key: MODEL_NAME
+        value: gemini-3.6-flash
+      - key: GEMINI_API_KEY
+        sync: false
 
-  # ===============================================================
-  # 2. StatVerify AI — Scheduled Daily Cron Job Service
-  # ===============================================================
+  # 2. Daily Cron Job Service
   - type: cron
-    name: statverify-ai-daily-cron
+    name: statverify-ai-cron
     env: docker
     dockerfilePath: ./Dockerfile
-    schedule: "0 0 * * *"
+    schedule: "0 0 * * *" # Runs daily at 00:00 UTC
     command: "python -m src.cron"
     plan: free
+    region: oregon
     envVars:
-      - key: GEMINI_API_KEY
-        sync: false
-      - key: MODEL_NAME
-        value: gemini-3.6-flash
       - key: APP_ENV
         value: production
       - key: LOG_LEVEL
         value: INFO
+      - key: MODEL_NAME
+        value: gemini-3.6-flash
+      - key: GEMINI_API_KEY
+        sync: false

@@ -1,92 +1,78 @@
 """
-Scheduled Cron Maintenance Module for StatVerify AI.
+StatVerify AI — Scheduled Cron Maintenance Task
 
-This module provides automated cleanup of temporary exports, logs, and cache
-files, intended to be executed on a schedule (e.g. via Render Cron Jobs).
-
-Usage:
-    python -m src.cron
+Executed by Render Cron Job (or local cron/task scheduler) for periodic system maintenance:
+- Cleaning up old PDF report exports and temporary log files.
+- System health checks and telemetry logging.
 """
 
 from __future__ import annotations
 
-import os
+import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from src.config import settings
-from src.utils import current_timestamp, logger
+from src.config import EXPORT_DIR, LOG_DIR, settings
+from src.utils import logger
 
 
-def cleanup_directory(directory: Path, max_age_hours: int = 24) -> tuple[int, int]:
+def cleanup_directory(directory: Path, days_old: int = 7) -> int:
     """
-    Remove files in `directory` older than `max_age_hours`.
-
-    Parameters
-    ----------
-    directory : Path
-        Directory to scan and clean.
-    max_age_hours : int, optional
-        Files older than this duration will be unlinked, by default 24.
-
-    Returns
-    -------
-    tuple[int, int]
-        (number_of_files_deleted, total_bytes_freed)
+    Remove files in directory older than specified number of days.
+    Returns count of removed files.
     """
-    if not directory.exists() or not directory.is_dir():
-        return 0, 0
+    if not directory.exists():
+        return 0
 
-    now = time.time()
-    cutoff = now - (max_age_hours * 3600)
-    deleted_count = 0
-    bytes_freed = 0
+    cutoff_time = datetime.now() - timedelta(days=days_old)
+    removed_count = 0
 
     for file_path in directory.glob("*"):
         if file_path.is_file():
-            try:
-                stat = file_path.stat()
-                if stat.st_mtime < cutoff:
-                    file_size = stat.st_size
+            file_mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
+            if file_mtime < cutoff_time:
+                try:
                     file_path.unlink()
-                    deleted_count += 1
-                    bytes_freed += file_size
-            except Exception as ex:
-                logger.warning(f"Could not clean file {file_path}: {ex}")
+                    removed_count += 1
+                    logger.info(f"Cleaned up old maintenance file: {file_path.name}")
+                except Exception as ex:
+                    logger.warning(f"Failed to delete {file_path.name}: {ex}")
 
-    return deleted_count, bytes_freed
+    return removed_count
 
 
-def run_maintenance(max_age_hours: int = 24) -> dict[str, int]:
+def run_maintenance_task() -> bool:
     """
-    Run complete maintenance pipeline.
-
-    Returns
-    -------
-    dict[str, int]
-        Summary of cleanup actions.
+    Main entrypoint for scheduled cron execution.
     """
-    timestamp = current_timestamp()
-    logger.info(f"=== Starting Cron Maintenance Task [{timestamp}] ===")
+    start_time = time.time()
+    logger.info("=" * 60)
+    logger.info(f"Starting StatVerify AI Cron Maintenance [{datetime.now().isoformat()}]")
+    logger.info(f"Environment: {settings.app_env} | Version: {settings.app_version}")
+    logger.info("=" * 60)
 
-    # 1. Clean exports directory
-    export_deleted, export_bytes = cleanup_directory(settings.export_dir, max_age_hours)
-    logger.info(f"Cleaned exports directory: {export_deleted} files removed ({export_bytes / 1024:.2f} KB freed).")
+    # 1. Clean up old export PDFs and logs
+    logger.info("1/2: Running directory cleanup...")
+    exports_removed = cleanup_directory(EXPORT_DIR, days_old=7)
+    logs_removed = cleanup_directory(LOG_DIR, days_old=14)
+    logger.info(f"Cleanup finished. Removed {exports_removed} exports and {logs_removed} old log files.")
 
-    # 2. Clean logs directory (keep logs from last 7 days)
-    log_deleted, log_bytes = cleanup_directory(settings.log_dir, max_age_hours=168)
-    logger.info(f"Cleaned logs directory: {log_deleted} stale log files removed.")
+    # 2. System Health Check
+    logger.info("2/2: Performing system health check...")
+    api_key_configured = bool(settings.gemini_api_key and "your_" not in settings.gemini_api_key)
+    logger.info(f"AI Model Configured ({settings.model_name}): {api_key_configured}")
 
-    summary = {
-        "export_files_removed": export_deleted,
-        "export_bytes_freed": export_bytes,
-        "log_files_removed": log_deleted,
-        "log_bytes_freed": log_bytes,
-    }
-
-    logger.info(f"=== Cron Maintenance Task Complete [{current_timestamp()}] ===")
-    return summary
+    elapsed = time.time() - start_time
+    logger.info(f"Cron Maintenance Completed Successfully in {elapsed:.2f}s")
+    logger.info("=" * 60)
+    return True
 
 
 if __name__ == "__main__":
-    run_maintenance()
+    try:
+        success = run_maintenance_task()
+        sys.exit(0 if success else 1)
+    except Exception as err:
+        logger.error(f"Cron execution failed with unhandled exception: {err}")
+        sys.exit(1)
