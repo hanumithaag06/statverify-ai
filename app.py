@@ -666,3 +666,27 @@ if __name__ == "__main__" or hasattr(st, "_is_running_with_streamlit"):
                 st.session_state.pop("preview_table", None)
                 st.session_state.pop("_role_mapping", None)
                 st.rerun()
+
+
+# ==========================================================
+# Vercel Serverless Function Entrypoint Compatibility
+# ==========================================================
+def app(environ, start_response):
+    """WSGI handler for Vercel Serverless deployment detection."""
+    status = "200 OK"
+    headers = [("Content-Type", "text/html; charset=utf-8")]
+    start_response(status, headers)
+    html_response = (
+        "<!DOCTYPE html>"
+        "<html><head><title>StatVerify AI</title></head>"
+        "<body style='font-family: sans-serif; padding: 2rem; max-width: 600px; margin: 0 auto; line-height: 1.6;'>"
+        "<h2>StatVerify AI Serverless Gateway</h2>"
+        "<p>This application is designed as an interactive Streamlit workspace.</p>"
+        "<p>For the full interactive UI experience, deploy using Docker on <strong>Render</strong> or <strong>Streamlit Community Cloud</strong>.</p>"
+        "</body></html>"
+    )
+    return [html_response.encode("utf-8")]
+
+
+application = app
+handler = app
